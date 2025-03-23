@@ -76,7 +76,11 @@ namespace NetSdrApp.NetSdr
             await DisposeAsync();
         }
 
-        public async Task<ControlItemSetOperationModel> SetReceiverStateAsync(ReceiverState receiverState, DataMode dataMode, CaptureMode captureMode, byte fifoSamplesNumber = 0x00)
+        public async Task<ControlItemSetOperationModel> SetReceiverStateAsync(
+            ReceiverState receiverState,
+            DataMode dataMode = DataMode.Ad,
+            CaptureMode captureMode = CaptureMode.Contiguous16Bit,
+            byte fifoSamplesNumber = 0x00)
         {
             const byte messageLength = 0x08;
 
@@ -100,24 +104,26 @@ namespace NetSdrApp.NetSdr
                 0x00,  // Length (MSB)
                 (byte)ControlItem.ReceiverState,  // Control Item Code
                 0x00,  // Control Item SubCode
-                (byte)dataMode,  // Data mode
+                receiverState == ReceiverState.Run ? (byte)dataMode : (byte)DataMode.Ad,  // Data mode
                 (byte)receiverState,  // Run/Stop
-                (byte)captureMode,  // Capture mode
-                captureMode == CaptureMode.Fifo16Bit ? fifoSamplesNumber : (byte)0x00, // the number of 4096 16 bit data samples to capture in the FIFO mode
+                receiverState == ReceiverState.Run ? (byte)captureMode : (byte)CaptureMode.Contiguous16Bit,  // Capture mode
+                receiverState == ReceiverState.Run
+                                 ? captureMode == CaptureMode.Fifo16Bit ? fifoSamplesNumber : (byte)0x00
+                                 : (byte)0x00, // the number of 4096 16 bit data samples to capture in the FIFO mode
             };
 
             await _tcpProvider.SendAsync(message);
             byte[] response = await _tcpProvider.ReceiveAsync();
 
-            bool isValidResponse = response != null && response.Length == 8 &&
-                                   response[0] == message[0] && response[1] == message[1] &&
-                                   response[2] == message[2] && response[3] == message[3] &&
-                                   response[5] == message[5];
+            bool isValidResponse = response != null
+                                    && response.Length == message.Length
+                                    && response.SequenceEqual(message);
 
             return new ControlItemSetOperationModel
             {
                 IsSuccess = isValidResponse,
-                ErrorMessage = isValidResponse ? null : GetSetControlItemError(response, "Failed to change receiver state.")
+                ErrorMessage = isValidResponse ? null : GetSetControlItemError(response, "Failed to change receiver state."),
+                RawResponse = response
             };
         }
 
@@ -174,7 +180,8 @@ namespace NetSdrApp.NetSdr
             return new ControlItemSetOperationModel
             {
                 IsSuccess = isValidResponse,
-                ErrorMessage = isValidResponse ? null : GetSetControlItemError(response, "Failed to set frequency.")
+                ErrorMessage = isValidResponse ? null : GetSetControlItemError(response, "Failed to set frequency."),
+                RawResponse = response
             };
         }
 
