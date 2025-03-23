@@ -1,4 +1,4 @@
-﻿namespace NetSdrClient.NetSdr.Models
+﻿namespace NetSdrApp.NetSdr.Models
 {
     public class ControlItemSetOperationModel
     {

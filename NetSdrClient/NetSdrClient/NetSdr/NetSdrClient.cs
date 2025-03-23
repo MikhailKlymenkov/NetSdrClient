@@ -1,8 +1,8 @@
-﻿using NetSdrClient.NetSdr.Models;
+﻿using NetSdrApp.NetSdr.Models;
 using System.Buffers;
 using System.Net.Sockets;
 
-namespace NetSdrClient.NetSdr
+namespace NetSdrApp.NetSdr
 {
     public class NetSdrClient : IAsyncDisposable, IDisposable
     {
@@ -174,7 +174,7 @@ namespace NetSdrClient.NetSdr
             };
         }
 
-        public async Task ReceiveAndSaveIQSamplesAsync(CancellationToken cancellationToken, string filePath, int port = DefaultUdpPort)
+        public async Task<bool> ReceiveAndSaveIQSamplesAsync(CancellationToken cancellationToken, string filePath, int port = DefaultUdpPort)
         {
             if (_disposed)
             {
@@ -185,36 +185,47 @@ namespace NetSdrClient.NetSdr
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
 
             const int headerSize = 4;
+            bool dataSaved = false;
 
             using UdpClient udpClient = new UdpClient(port);
-            using FileStream fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, FileBufferSize, true);
-
-            try
+            using (FileStream fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, FileBufferSize, true))
             {
-                while (!cancellationToken.IsCancellationRequested)
+                try
                 {
-                    Task<UdpReceiveResult> receiveTask = udpClient.ReceiveAsync();
-
-                    await Task.WhenAny(receiveTask, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
-
-                    if (cancellationToken.IsCancellationRequested)
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        break;
-                    }
+                        Task<UdpReceiveResult> receiveTask = udpClient.ReceiveAsync();
 
-                    UdpReceiveResult receivedResult = await receiveTask.ConfigureAwait(false);
-                    byte[] receivedData = receivedResult.Buffer;
+                        await Task.WhenAny(receiveTask, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
 
-                    if (receivedData.Length > headerSize)
-                    {
-                        await fileStream.WriteAsync(receivedData, headerSize, receivedData.Length - headerSize, cancellationToken).ConfigureAwait(false);
-                        await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            break;
+                        }
+
+                        UdpReceiveResult receivedResult = await receiveTask.ConfigureAwait(false);
+                        byte[] receivedData = receivedResult.Buffer;
+
+                        if (receivedData.Length > headerSize)
+                        {
+                            await fileStream.WriteAsync(receivedData, headerSize, receivedData.Length - headerSize, cancellationToken).ConfigureAwait(false);
+                            await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                            dataSaved = true;
+                        }
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                }
             }
-            catch (OperationCanceledException)
+
+            if (!dataSaved && File.Exists(filePath))
             {
+                File.Delete(filePath);
             }
+
+            return dataSaved;
         }
 
         private async Task SendMessageAsync(byte[] message)
