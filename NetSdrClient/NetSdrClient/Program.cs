@@ -1,13 +1,13 @@
 ﻿using NetSdrApp.NetSdr;
 using NetSdrApp.NetSdr.Models;
+using NetSdrApp.Network;
 
 Console.WriteLine("NetSDR Client Console Application");
 
-// Prompt the user to enter the host
 Console.Write("Enter the NetSDR device host (e.g., 127.0.0.1): ");
 string host = Console.ReadLine();
 
-using var client = new NetSdrClient();
+using var client = new NetSdrClient(new TcpProvider(), new UdpProvider());
 
 try
 {
@@ -19,6 +19,11 @@ try
     Console.WriteLine("Setting receiver state...");
     var receiverResult = await client.SetReceiverStateAsync(ReceiverState.Run, DataMode.Iq, CaptureMode.Contiguous16Bit);
     Console.WriteLine(receiverResult.IsSuccess ? "Receiver started successfully." : $"Error: {receiverResult.ErrorMessage}");
+
+    if (!receiverResult.IsSuccess)
+    {
+        return;
+    }
 
     // Set Receiver Frequency
     ulong frequencyHz;
@@ -41,6 +46,11 @@ try
     var frequencyResult = await client.SetReceiverFrequencyAsync(ChannelId.AllChannels, frequencyHz);
     Console.WriteLine(frequencyResult.IsSuccess ? "Frequency set successfully." : $"Error: {frequencyResult.ErrorMessage}");
 
+    if (!frequencyResult.IsSuccess)
+    {
+        return;
+    }
+
     // Receive and Save IQ Samples
     string filePath = "iq_samples.dat";
     Console.WriteLine("Receiving IQ samples. Press Ctrl+C to stop...");
@@ -50,10 +60,15 @@ try
     {
         e.Cancel = true;
         cts.Cancel();
+
         Console.WriteLine("\nCanceling IQ sample reception...");
     };
 
-    bool result = await client.ReceiveAndSaveIQSamplesAsync(cts.Token, filePath);
+    Console.Write("Enter the UDP host: ");
+
+    string udpHost = Console.ReadLine();
+
+    bool result = await client.ReceiveAndSaveIQSamplesAsync(cts.Token, filePath, udpHost);
 
     if (result)
     {

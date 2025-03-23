@@ -1,5 +1,5 @@
 ﻿using NetSdrApp.NetSdr.Models;
-using System.Buffers;
+using NetSdrApp.Network;
 using System.Net.Sockets;
 
 namespace NetSdrApp.NetSdr
@@ -9,15 +9,18 @@ namespace NetSdrApp.NetSdr
         private const int DefaultTcpPort = 50000;
         private const int DefaultUdpPort = 60000;
         private const int FileBufferSize = 4096;
-        private const int TcpBufferSize = 512;
 
-        private TcpClient _tcpClient;
-        private NetworkStream _networkStream;
-        private bool _isConnected;
+        private readonly ITcpProvider _tcpProvider;
+        private readonly IUdpProvider _udpProvider;
+
+        private bool _isTcpConnected;
+        private bool _isUdpConnected;
         private bool _disposed;
 
-        public NetSdrClient()
+        public NetSdrClient(ITcpProvider tcpProvider, IUdpProvider udpProvider)
         {
+            _tcpProvider = tcpProvider ?? throw new ArgumentNullException(nameof(tcpProvider));
+            _udpProvider = udpProvider ?? throw new ArgumentNullException(nameof(udpProvider));
         }
 
         public async ValueTask DisposeAsync()
@@ -25,14 +28,11 @@ namespace NetSdrApp.NetSdr
             if (!_disposed)
             {
                 _disposed = true;
-                _isConnected = false;
+                _isTcpConnected = false;
+                _isUdpConnected = false;
 
-                if (_networkStream is not null)
-                {
-                    await _networkStream.DisposeAsync();
-                }
-
-                _tcpClient?.Dispose();
+                await _tcpProvider.DisposeAsync();
+                _udpProvider?.Dispose();
 
                 GC.SuppressFinalize(this);
             }
@@ -43,10 +43,11 @@ namespace NetSdrApp.NetSdr
             if (!_disposed)
             {
                 _disposed = true;
-                _isConnected = false;
+                _isTcpConnected = false;
+                _isUdpConnected = false;
 
-                _networkStream?.Dispose();
-                _tcpClient?.Dispose();
+                _tcpProvider?.Dispose();
+                _udpProvider?.Dispose();
 
                 GC.SuppressFinalize(this);
             }
@@ -62,13 +63,11 @@ namespace NetSdrApp.NetSdr
             ArgumentException.ThrowIfNullOrWhiteSpace(host);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
 
-            if (!_isConnected)
+            if (!_isTcpConnected)
             {
-                _tcpClient = new TcpClient();
-                await _tcpClient.ConnectAsync(host, port).ConfigureAwait(false);
+                await _tcpProvider.ConnectAsync(host, port).ConfigureAwait(false);
 
-                _networkStream = _tcpClient.GetStream();
-                _isConnected = true;
+                _isTcpConnected = true;
             }
         }
 
@@ -79,12 +78,14 @@ namespace NetSdrApp.NetSdr
 
         public async Task<ControlItemSetOperationModel> SetReceiverStateAsync(ReceiverState receiverState, DataMode dataMode, CaptureMode captureMode, byte fifoSamplesNumber = 0x00)
         {
+            const byte messageLength = 0x08;
+
             if (_disposed)
             {
                 throw new ObjectDisposedException(nameof(NetSdrClient));
             }
 
-            if (!_isConnected)
+            if (!_isTcpConnected)
             {
                 return new ControlItemSetOperationModel
                 {
@@ -95,9 +96,9 @@ namespace NetSdrApp.NetSdr
 
             byte[] message =
             {
-                0x08,  // Length (LSB)
+                messageLength,  // Length (LSB)
                 0x00,  // Length (MSB)
-                0x18,  // Control Item Code
+                (byte)ControlItem.ReceiverState,  // Control Item Code
                 0x00,  // Control Item SubCode
                 (byte)dataMode,  // Data mode
                 (byte)receiverState,  // Run/Stop
@@ -105,8 +106,8 @@ namespace NetSdrApp.NetSdr
                 captureMode == CaptureMode.Fifo16Bit ? fifoSamplesNumber : (byte)0x00, // the number of 4096 16 bit data samples to capture in the FIFO mode
             };
 
-            await SendMessageAsync(message);
-            byte[] response = await ReceiveMessageAsync();
+            await _tcpProvider.SendAsync(message);
+            byte[] response = await _tcpProvider.ReceiveAsync();
 
             bool isValidResponse = response != null && response.Length == 8 &&
                                    response[0] == message[0] && response[1] == message[1] &&
@@ -122,6 +123,8 @@ namespace NetSdrApp.NetSdr
 
         public async Task<ControlItemSetOperationModel> SetReceiverFrequencyAsync(ChannelId channelId, ulong frequencyHz)
         {
+            const byte messageLength = 0x0A;
+
             if (_disposed)
             {
                 throw new ObjectDisposedException(nameof(NetSdrClient));
@@ -137,7 +140,7 @@ namespace NetSdrApp.NetSdr
                 throw new ArgumentOutOfRangeException(nameof(frequencyHz), "Frequency value exceeds 40-bit limit.");
             }
 
-            if (!_isConnected)
+            if (!_isTcpConnected)
             {
                 return new ControlItemSetOperationModel
                 {
@@ -148,9 +151,9 @@ namespace NetSdrApp.NetSdr
 
             byte[] message =
             {
-                0x0A,  // Length (LSB)
+                messageLength,  // Length (LSB)
                 0x00,  // Length (MSB)
-                0x20,  // Control Item Code
+                (byte)ControlItem.ReceiverFrequency,  // Control Item Code
                 0x00,  // Control Item SubCode
                 (byte)channelId,  // Channel ID
                 (byte)(frequencyHz & 0xFF), // 5-byte frequency (Little Endian)
@@ -160,8 +163,8 @@ namespace NetSdrApp.NetSdr
                 (byte)(frequencyHz >> 32 & 0xFF),
             };
 
-            await SendMessageAsync(message);
-            byte[] response = await ReceiveMessageAsync();
+            await _tcpProvider.SendAsync(message);
+            byte[] response = await _tcpProvider.ReceiveAsync();
 
             bool isValidResponse = response != null
                                     && response.Length == message.Length
@@ -174,7 +177,7 @@ namespace NetSdrApp.NetSdr
             };
         }
 
-        public async Task<bool> ReceiveAndSaveIQSamplesAsync(CancellationToken cancellationToken, string filePath, int port = DefaultUdpPort)
+        public async Task<bool> ReceiveAndSaveIQSamplesAsync(CancellationToken cancellationToken, string filePath, string hostname, int port = DefaultUdpPort)
         {
             if (_disposed)
             {
@@ -183,18 +186,21 @@ namespace NetSdrApp.NetSdr
 
             ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
+            ArgumentOutOfRangeException.ThrowIfNullOrWhiteSpace(hostname);
 
             const int headerSize = 4;
             bool dataSaved = false;
 
-            using UdpClient udpClient = new UdpClient(port);
+            ConnectToUdp(hostname, port);
+
+            // TODO: Add FileProvider
             using (FileStream fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, FileBufferSize, true))
             {
                 try
                 {
                     while (!cancellationToken.IsCancellationRequested)
                     {
-                        Task<UdpReceiveResult> receiveTask = udpClient.ReceiveAsync();
+                        Task<UdpReceiveResult> receiveTask = _udpProvider.ReceiveAsync();
 
                         await Task.WhenAny(receiveTask, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
 
@@ -228,37 +234,18 @@ namespace NetSdrApp.NetSdr
             return dataSaved;
         }
 
-        private async Task SendMessageAsync(byte[] message)
+        private void ConnectToUdp(string hostname, int port)
         {
-            if (_isConnected)
+            if (!_isUdpConnected)
             {
-                await _networkStream.WriteAsync(message, 0, message.Length).ConfigureAwait(false);
-            }
-        }
-
-        private async Task<byte[]> ReceiveMessageAsync()
-        {
-            if (!_isConnected)
-            {
-                return null;
-            }
-
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(TcpBufferSize);
-
-            try
-            {
-                int bytesRead = await _networkStream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
-                return buffer.Take(bytesRead).ToArray();
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
+                _udpProvider.Connect(hostname, port);
+                _isUdpConnected = true;
             }
         }
 
         private string GetNakMessage(byte[] response)
         {
-            if (response[0] == 0x02 && response[1] == 0x00) // NAK response [02][00]
+            if (response != null && response.Length > 2 && response[0] == 0x02 && response[1] == 0x00) // NAK response [02][00]
             {
                 return "Received NAK: Control item not supported.";
             }
