@@ -124,6 +124,7 @@ namespace NetSdrApp.NetSdr
         public async Task<ControlItemSetOperationModel> SetReceiverFrequencyAsync(ChannelId channelId, ulong frequencyHz)
         {
             const byte messageLength = 0x0A;
+            const byte frequencyByteMask = 0xFF;
 
             if (_disposed)
             {
@@ -156,11 +157,11 @@ namespace NetSdrApp.NetSdr
                 (byte)ControlItem.ReceiverFrequency,  // Control Item Code
                 0x00,  // Control Item SubCode
                 (byte)channelId,  // Channel ID
-                (byte)(frequencyHz & 0xFF), // 5-byte frequency (Little Endian)
-                (byte)(frequencyHz >> 8 & 0xFF),
-                (byte)(frequencyHz >> 16 & 0xFF),
-                (byte)(frequencyHz >> 24 & 0xFF),
-                (byte)(frequencyHz >> 32 & 0xFF),
+                (byte)(frequencyHz & frequencyByteMask), // 5-byte frequency (Little Endian)
+                (byte)(frequencyHz >> 8 & frequencyByteMask),
+                (byte)(frequencyHz >> 16 & frequencyByteMask),
+                (byte)(frequencyHz >> 24 & frequencyByteMask),
+                (byte)(frequencyHz >> 32 & frequencyByteMask),
             };
 
             await _tcpProvider.SendAsync(message);
